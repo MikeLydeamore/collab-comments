@@ -1,0 +1,125 @@
+{
+  "name": "comment-tracker",
+  "displayName": "Comment Tracker",
+  "description": "Track comments with author and timestamp for QMD and other files",
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MikeLydeamore/collab-comments"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Comment Tracker",
+      "properties": {
+        "commentTracker.defaultAuthor": {
+          "type": "string",
+          "default": "",
+          "description": "Your default name for comments. If empty, will prompt each time or use system username."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "comment-tracker.addComment",
+        "title": "Add Comment"
+      },
+      {
+        "command": "comment-tracker.viewComments",
+        "title": "View All Comments"
+      },
+      {
+        "command": "comment-tracker.deleteComment",
+        "title": "Delete Comment"
+      },
+      {
+        "command": "comment-tracker.deleteReply",
+        "title": "Delete Reply"
+      },
+      {
+        "command": "comment-tracker.deleteCommentThread",
+        "title": "Delete",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "comment-tracker.resolveCommentThread",
+        "title": "Resolve",
+        "icon": "$(check)"
+      },
+      {
+        "command": "comment-tracker.unresolveCommentThread",
+        "title": "Unresolve",
+        "icon": "$(issues)"
+      },
+      {
+        "command": "comment-tracker.replyNote",
+        "title": "Reply"
+      },
+      {
+        "command": "comment-tracker.deleteReply",
+        "title": "Delete Reply",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "comment-tracker.addComment",
+          "group": "navigation"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "comment-tracker.resolveCommentThread",
+          "group": "inline@1",
+          "when": "commentController == comment-tracker"
+        },
+        {
+          "command": "comment-tracker.deleteCommentThread",
+          "group": "inline@2",
+          "when": "commentController == comment-tracker"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "comment-tracker.replyNote",
+          "group": "inline@1",
+          "when": "commentController == comment-tracker"
+        }
+      ]
+    },
+    "keybindings": []
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "node ./esbuild.js",
+    "watch": "node ./esbuild.js --watch",
+    "package": "node ./esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "18.x",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "esbuild": "^0.19.10",
+    "typescript": "^5.3.3",
+    "@vscode/test-cli": "^0.0.4",
+    "@vscode/test-electron": "^2.3.8"
+  }
+}

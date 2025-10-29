@@ -1,0 +1,648 @@
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface CommentData {
+  id: string;
+  author: string;
+  timestamp: string;
+  text: string;
+  filePath: string;
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  replies?: Array<{
+    id: string;
+    author: string;
+    timestamp: string;
+    text: string;
+  }>;
+  resolved?: boolean;
+}
+
+interface CommentStore {
+  comments: CommentData[];
+}
+
+let commentController: vscode.CommentController;
+let commentStore: CommentStore = { comments: [] };
+const commentThreads = new Map<string, vscode.CommentThread>();
+
+export function activate(context: vscode.ExtensionContext) {
+  console.log('Comment Tracker extension is now active!');
+
+  // Create comment controller
+  commentController = vscode.comments.createCommentController(
+    'comment-tracker',
+    'Comment Tracker'
+  );
+
+  // Configure to show comments on the side
+  commentController.options = {
+    prompt: 'Add a reply (Ctrl+Enter to submit)...',
+    placeHolder: 'Type your reply here'
+  };
+
+  // Register comment reply handler
+  commentController.commentingRangeProvider = {
+    provideCommentingRanges: (document: vscode.TextDocument) => {
+      // Allow commenting on any line
+      const lineCount = document.lineCount;
+      return [new vscode.Range(0, 0, lineCount - 1, 0)];
+    }
+  };
+
+  context.subscriptions.push(commentController);
+
+  // Load existing comments
+  loadComments();
+  restoreCommentThreads();
+
+  // Register commands
+  const addCommentCmd = vscode.commands.registerCommand('comment-tracker.addComment', async () => {
+    await addComment();
+  });
+
+  const viewCommentsCmd = vscode.commands.registerCommand('comment-tracker.viewComments', async () => {
+    await viewComments();
+  });
+
+  const deleteCommentCmd = vscode.commands.registerCommand('comment-tracker.deleteComment', async () => {
+    await deleteComment();
+  });
+
+  const deleteCommentThreadCmd = vscode.commands.registerCommand(
+    'comment-tracker.deleteCommentThread',
+    async (thread: vscode.CommentThread) => {
+      await deleteCommentThread(thread);
+    }
+  );
+
+  const replyToCommentCmd = vscode.commands.registerCommand(
+    'comment-tracker.replyNote',
+    async (reply: vscode.CommentReply) => {
+      await replyToComment(reply);
+    }
+  );
+
+  const resolveCommentThreadCmd = vscode.commands.registerCommand(
+    'comment-tracker.resolveCommentThread',
+    async (thread: vscode.CommentThread) => {
+      await resolveCommentThread(thread);
+    }
+  );
+
+  const unresolveCommentThreadCmd = vscode.commands.registerCommand(
+    'comment-tracker.unresolveCommentThread',
+    async (thread: vscode.CommentThread) => {
+      await resolveCommentThread(thread);
+    }
+  );
+
+  const deleteReplyCmd = vscode.commands.registerCommand(
+    'comment-tracker.deleteReply',
+    async () => {
+      await deleteReplyInteractive();
+    }
+  );
+
+  context.subscriptions.push(addCommentCmd, viewCommentsCmd, deleteCommentCmd, deleteCommentThreadCmd, replyToCommentCmd, resolveCommentThreadCmd, unresolveCommentThreadCmd, deleteReplyCmd);
+}
+
+async function getAuthorName(): Promise<string | undefined> {
+  // Check if there's a configured default author
+  const config = vscode.workspace.getConfiguration('commentTracker');
+  const defaultAuthor = config.get<string>('defaultAuthor');
+
+  if (defaultAuthor && defaultAuthor.trim() !== '') {
+    return defaultAuthor.trim();
+  }
+
+  // Otherwise, prompt with system username as default
+  const author = await vscode.window.showInputBox({
+    prompt: 'Enter your name (or set a default in settings)',
+    placeHolder: 'Your name',
+    value: process.env.USER || process.env.USERNAME || 'Anonymous'
+  });
+
+  return author;
+}
+
+async function addComment() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('No active editor found');
+    return;
+  }
+
+  const selection = editor.selection;
+  let range = new vscode.Range(selection.start, selection.end);
+
+  // If no text is selected (zero-length range), use the entire line
+  if (range.isEmpty) {
+    const line = editor.document.lineAt(selection.start.line);
+    range = line.range;
+  }
+
+  const commentText = await vscode.window.showInputBox({
+    prompt: 'Enter your comment',
+    placeHolder: 'Type your comment here...'
+  });
+
+  if (!commentText) {
+    return;
+  }
+
+  const author = await getAuthorName();
+
+  if (!author) {
+    return;
+  }
+
+  const commentId = Date.now().toString();
+  const timestamp = new Date().toISOString();
+
+  // Create comment thread
+  const thread = commentController.createCommentThread(
+    editor.document.uri,
+    range,
+    []
+  );
+
+  const vsComment: vscode.Comment = {
+    body: new vscode.MarkdownString(`${new Date(timestamp).toLocaleString()}\n\n${commentText}`),
+    mode: vscode.CommentMode.Preview,
+    author: {
+      name: author
+    }
+  };
+
+  thread.comments = [vsComment];
+  thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+  thread.canReply = true;
+  thread.contextValue = commentId;
+  thread.state = vscode.CommentThreadState.Unresolved;
+
+  // Store comment data
+  const commentData: CommentData = {
+    id: commentId,
+    author,
+    timestamp,
+    text: commentText,
+    filePath: vscode.workspace.asRelativePath(editor.document.uri),
+    range: {
+      start: { line: range.start.line, character: range.start.character },
+      end: { line: range.end.line, character: range.end.character }
+    },
+    replies: [],
+    resolved: false
+  };
+
+  commentStore.comments.push(commentData);
+  commentThreads.set(commentId, thread);
+
+  saveComments();
+
+  vscode.window.showInformationMessage(`Comment added by ${author}`);
+}
+
+async function viewComments() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('No active editor found');
+    return;
+  }
+
+  const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+  const fileComments = commentStore.comments.filter(c => c.filePath === filePath);
+
+  if (fileComments.length === 0) {
+    vscode.window.showInformationMessage('No comments found for this file');
+    return;
+  }
+
+  const items = fileComments.map(c => ({
+    label: `Line ${c.range.start.line + 1}: ${c.text}`,
+    description: `by ${c.author} on ${new Date(c.timestamp).toLocaleString()}`,
+    comment: c
+  }));
+
+  const selected = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Select a comment to view'
+  });
+
+  if (selected) {
+    const position = new vscode.Position(selected.comment.range.start.line, selected.comment.range.start.character);
+    editor.selection = new vscode.Selection(position, position);
+    editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+  }
+}
+
+async function deleteComment() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('No active editor found');
+    return;
+  }
+
+  const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+  const fileComments = commentStore.comments.filter(c => c.filePath === filePath);
+
+  if (fileComments.length === 0) {
+    vscode.window.showInformationMessage('No comments found for this file');
+    return;
+  }
+
+  const items = fileComments.map(c => ({
+    label: `Line ${c.range.start.line + 1}: ${c.text}`,
+    description: `by ${c.author} on ${new Date(c.timestamp).toLocaleString()}`,
+    comment: c
+  }));
+
+  const selected = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Select a comment to delete'
+  });
+
+  if (selected) {
+    // Confirm deletion
+    const confirm = await vscode.window.showWarningMessage(
+      `Delete comment: "${selected.comment.text}"?`,
+      { modal: true },
+      'Delete'
+    );
+
+    if (confirm !== 'Delete') {
+      return;
+    }
+
+    // Remove from store
+    commentStore.comments = commentStore.comments.filter(c => c.id !== selected.comment.id);
+
+    // Dispose comment thread
+    const thread = commentThreads.get(selected.comment.id);
+    if (thread) {
+      thread.dispose();
+      commentThreads.delete(selected.comment.id);
+    }
+
+    saveComments();
+    vscode.window.showInformationMessage('Comment deleted');
+  }
+}
+
+async function deleteCommentThread(thread: vscode.CommentThread) {
+  const commentId = thread.contextValue;
+
+  if (!commentId) {
+    vscode.window.showErrorMessage('Unable to identify comment');
+    return;
+  }
+
+  const commentData = commentStore.comments.find(c => c.id === commentId);
+  if (!commentData) {
+    vscode.window.showErrorMessage('Comment not found');
+    return;
+  }
+
+  // Confirm deletion
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete this comment thread?`,
+    { modal: true },
+    'Delete'
+  );
+
+  if (confirm !== 'Delete') {
+    return;
+  }
+
+  // Remove from store
+  commentStore.comments = commentStore.comments.filter(c => c.id !== commentId);
+
+  // Dispose comment thread
+  thread.dispose();
+  commentThreads.delete(commentId);
+
+  saveComments();
+  vscode.window.showInformationMessage('Comment deleted');
+}
+
+async function resolveCommentThread(thread: vscode.CommentThread, toggleToResolved?: boolean) {
+  const commentId = thread.contextValue;
+
+  if (!commentId) {
+    vscode.window.showErrorMessage('Unable to identify comment');
+    return;
+  }
+
+  // If toggleToResolved not specified, toggle based on current state
+  const commentData = commentStore.comments.find(c => c.id === commentId);
+  if (!commentData) {
+    vscode.window.showErrorMessage('Comment data not found');
+    return;
+  }
+
+  const resolved = toggleToResolved !== undefined ? toggleToResolved : !commentData.resolved;
+
+  // Update the thread state
+  thread.state = resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
+
+  // Update the first comment to show resolved status
+  if (thread.comments && thread.comments.length > 0) {
+    const firstComment = thread.comments[0];
+    const updatedComment: vscode.Comment = {
+      ...firstComment,
+      author: {
+        name: resolved ? `RESOLVED - ${commentData.author}` : commentData.author
+      }
+    };
+    thread.comments = [updatedComment, ...thread.comments.slice(1)];
+  }
+
+  // Update storage
+  commentData.resolved = resolved;
+  saveComments();
+  vscode.window.showInformationMessage(resolved ? 'Comment resolved' : 'Comment unresolved');
+}
+
+async function deleteReplyInteractive() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('No active editor found');
+    return;
+  }
+
+  const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+  const fileComments = commentStore.comments.filter(c => c.filePath === filePath);
+
+  // Build a list of all replies
+  const replyItems: Array<{
+    label: string;
+    description: string;
+    commentData: CommentData;
+    replyId: string;
+  }> = [];
+
+  for (const commentData of fileComments) {
+    if (commentData.replies && commentData.replies.length > 0) {
+      for (const reply of commentData.replies) {
+        replyItems.push({
+          label: `Line ${commentData.range.start.line + 1}: ${reply.text}`,
+          description: `Reply by ${reply.author} on ${new Date(reply.timestamp).toLocaleString()}`,
+          commentData,
+          replyId: reply.id
+        });
+      }
+    }
+  }
+
+  if (replyItems.length === 0) {
+    vscode.window.showInformationMessage('No replies found in this file');
+    return;
+  }
+
+  const selected = await vscode.window.showQuickPick(replyItems, {
+    placeHolder: 'Select a reply to delete'
+  });
+
+  if (!selected) {
+    return;
+  }
+
+  // Confirm deletion
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete reply: "${selected.label}"?`,
+    { modal: true },
+    'Delete'
+  );
+
+  if (confirm !== 'Delete') {
+    return;
+  }
+
+  // Find the thread
+  const thread = commentThreads.get(selected.commentData.id);
+  if (!thread) {
+    vscode.window.showErrorMessage('Comment thread not found');
+    return;
+  }
+
+  // Remove from storage
+  if (selected.commentData.replies) {
+    selected.commentData.replies = selected.commentData.replies.filter(r => r.id !== selected.replyId);
+  }
+
+  // Update the thread's comments
+  thread.comments = thread.comments.filter(c => c.contextValue !== selected.replyId);
+
+  saveComments();
+  vscode.window.showInformationMessage('Reply deleted');
+}
+
+async function replyToComment(reply: vscode.CommentReply) {
+  console.log('replyToComment called', reply);
+
+  if (!reply || !reply.thread) {
+    vscode.window.showErrorMessage('Invalid reply context');
+    return;
+  }
+
+  const thread = reply.thread;
+  const replyText = reply.text;
+
+  if (!replyText) {
+    return;
+  }
+
+  // Check if this is a NEW comment (empty thread) or a REPLY (thread has comments)
+  const isNewComment = !thread.comments || thread.comments.length === 0;
+
+  const author = await getAuthorName();
+
+  if (!author) {
+    return;
+  }
+
+  const timestamp = new Date().toISOString();
+
+  if (isNewComment) {
+    // This is a NEW comment from the + icon
+    const commentId = Date.now().toString();
+
+    const vsComment: vscode.Comment = {
+      body: new vscode.MarkdownString(`${new Date(timestamp).toLocaleString()}\n\n${replyText}`),
+      mode: vscode.CommentMode.Preview,
+      author: {
+        name: author
+      }
+    };
+
+    thread.comments = [vsComment];
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    thread.canReply = true;
+    thread.contextValue = commentId;
+    thread.state = vscode.CommentThreadState.Unresolved;
+
+    // Store comment data
+    const filePath = vscode.workspace.asRelativePath(thread.uri);
+    const range = thread.range;
+
+    if (!range) {
+      vscode.window.showErrorMessage('Invalid comment range');
+      return;
+    }
+
+    const commentData: CommentData = {
+      id: commentId,
+      author,
+      timestamp,
+      text: replyText,
+      filePath,
+      range: {
+        start: { line: range.start.line, character: range.start.character },
+        end: { line: range.end.line, character: range.end.character }
+      },
+      replies: [],
+      resolved: false
+    };
+
+    commentStore.comments.push(commentData);
+    commentThreads.set(commentId, thread);
+    saveComments();
+
+    vscode.window.showInformationMessage(`Comment added by ${author}`);
+  } else {
+    // This is a REPLY to an existing comment
+    const replyId = `${thread.contextValue}-reply-${Date.now()}`;
+    const newComment: vscode.Comment = {
+      body: new vscode.MarkdownString(`└─ ${new Date(timestamp).toLocaleString()}\n\n${replyText}`),
+      mode: vscode.CommentMode.Preview,
+      author: {
+        name: author
+      },
+      contextValue: replyId
+    };
+
+    // Add the new reply to the thread
+    thread.comments = [...thread.comments, newComment];
+
+    // Save the reply to storage
+    const commentId = thread.contextValue;
+    if (commentId) {
+      const commentData = commentStore.comments.find(c => c.id === commentId);
+      if (commentData) {
+        if (!commentData.replies) {
+          commentData.replies = [];
+        }
+        commentData.replies.push({
+          id: replyId,
+          author,
+          timestamp,
+          text: replyText
+        });
+        saveComments();
+      }
+    }
+
+    vscode.window.showInformationMessage(`Reply added by ${author}`);
+  }
+}
+
+function restoreCommentThreads() {
+  // Restore comment threads from stored data
+  for (const commentData of commentStore.comments) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+      continue;
+    }
+
+    const uri = vscode.Uri.joinPath(workspaceFolder.uri, commentData.filePath);
+    const range = new vscode.Range(
+      commentData.range.start.line,
+      commentData.range.start.character,
+      commentData.range.end.line,
+      commentData.range.end.character
+    );
+
+    const thread = commentController.createCommentThread(uri, range, []);
+
+    const vsComment: vscode.Comment = {
+      body: new vscode.MarkdownString(`${new Date(commentData.timestamp).toLocaleString()}\n\n${commentData.text}`),
+      mode: vscode.CommentMode.Preview,
+      author: {
+        name: commentData.resolved ? `RESOLVED - ${commentData.author}` : commentData.author
+      }
+    };
+
+    // Build array of all comments (original + replies)
+    const allComments = [vsComment];
+
+    // Add replies if they exist
+    if (commentData.replies && commentData.replies.length > 0) {
+      for (const reply of commentData.replies) {
+        const replyComment: vscode.Comment = {
+          body: new vscode.MarkdownString(`└─ ${new Date(reply.timestamp).toLocaleString()}\n\n${reply.text}`),
+          mode: vscode.CommentMode.Preview,
+          author: {
+            name: reply.author
+          },
+          contextValue: reply.id || `${commentData.id}-reply-${reply.timestamp}`
+        };
+        allComments.push(replyComment);
+      }
+    }
+
+    thread.comments = allComments;
+    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    thread.contextValue = commentData.id;
+    thread.canReply = true;
+    thread.state = commentData.resolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
+
+    commentThreads.set(commentData.id, thread);
+  }
+}
+
+function getCommentsFilePath(): string | undefined {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return undefined;
+  }
+
+  const vscodeDir = path.join(workspaceFolder.uri.fsPath, '.comments');
+  if (!fs.existsSync(vscodeDir)) {
+    fs.mkdirSync(vscodeDir, { recursive: true });
+  }
+
+  return path.join(vscodeDir, 'collab-comments.json');
+}
+
+function loadComments() {
+  const filePath = getCommentsFilePath();
+  if (!filePath || !fs.existsSync(filePath)) {
+    return;
+  }
+
+  try {
+    const data = fs.readFileSync(filePath, 'utf8');
+    commentStore = JSON.parse(data);
+  } catch (error) {
+    console.error('Failed to load comments:', error);
+  }
+}
+
+function saveComments() {
+  const filePath = getCommentsFilePath();
+  if (!filePath) {
+    vscode.window.showErrorMessage('No workspace folder found');
+    return;
+  }
+
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(commentStore, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Failed to save comments:', error);
+    vscode.window.showErrorMessage('Failed to save comments');
+  }
+}
+
+export function deactivate() { }
