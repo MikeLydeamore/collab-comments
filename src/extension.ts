@@ -128,11 +128,11 @@ export function activate(context: vscode.ExtensionContext) {
       if (!workspaceFolder) {
         return;
       }
-      
+
       const uri = vscode.Uri.joinPath(workspaceFolder.uri, commentData.filePath);
       const document = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(document);
-      
+
       const position = new vscode.Position(commentData.range.start.line, commentData.range.start.character);
       editor.selection = new vscode.Selection(position, position);
       editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
@@ -160,10 +160,10 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<CommentTreeItem> {
       if (element.replyData) {
         return Promise.resolve([]);
       }
-      
+
       // For main comment items, show the comment text first, then replies
       const children: CommentTreeItem[] = [];
-      
+
       // Add the comment text as a child item
       children.push(
         new CommentTreeItem(
@@ -174,7 +174,7 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<CommentTreeItem> {
           true // Mark as comment text item
         )
       );
-      
+
       // Add replies if any
       if (element.commentData.replies && element.commentData.replies.length > 0) {
         element.commentData.replies.forEach(reply => {
@@ -188,12 +188,12 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<CommentTreeItem> {
           );
         });
       }
-      
+
       return Promise.resolve(children);
     } else {
       // Root level - show all unresolved comments
       const unresolvedComments = commentStore.comments.filter(c => !c.resolved);
-      
+
       if (unresolvedComments.length === 0) {
         return Promise.resolve([]);
       }
@@ -220,7 +220,7 @@ class CommentTreeItem extends vscode.TreeItem {
     public readonly isCommentText?: boolean
   ) {
     super(label, collapsibleState);
-    
+
     // Set tooltip and description based on item type
     if (isCommentText) {
       // This is the comment text child item - no description needed
@@ -235,7 +235,7 @@ class CommentTreeItem extends vscode.TreeItem {
       this.tooltip = `${commentData.author} - ${new Date(commentData.timestamp).toLocaleString()}`;
       this.description = '';
     }
-    
+
     // Add command to navigate to comment when clicked (only for root items and comment text items)
     if (!replyData || isCommentText) {
       this.command = {
