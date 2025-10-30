@@ -7,6 +7,7 @@
     "type": "git",
     "url": "https://github.com/MikeLydeamore/collab-comments"
   },
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -94,6 +95,23 @@
           "command": "comment-tracker.replyNote",
           "group": "inline@1",
           "when": "commentController == comment-tracker"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "comment-tracker-container",
+          "title": "Comment Tracker",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "comment-tracker-container": [
+        {
+          "id": "commentTrackerView",
+          "name": "Unresolved Comments"
         }
       ]
     },

@@ -29,6 +29,7 @@ let commentController: vscode.CommentController;
 let commentStore: CommentStore = { comments: [] };
 const commentThreads = new Map<string, vscode.CommentThread>();
 let saveTimeout: NodeJS.Timeout | undefined;
+let commentsTreeProvider: CommentsTreeProvider;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('Comment Tracker extension is now active!');
@@ -115,7 +116,135 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
-  context.subscriptions.push(addCommentCmd, viewCommentsCmd, deleteCommentCmd, deleteCommentThreadCmd, replyToCommentCmd, resolveCommentThreadCmd, unresolveCommentThreadCmd, deleteReplyCmd);
+  // Register tree view for unresolved comments
+  commentsTreeProvider = new CommentsTreeProvider();
+  vscode.window.registerTreeDataProvider('commentTrackerView', commentsTreeProvider);
+
+  // Command to navigate to a comment from the tree view
+  const navigateToCommentCmd = vscode.commands.registerCommand(
+    'comment-tracker.navigateToComment',
+    async (commentData: CommentData) => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+        return;
+      }
+      
+      const uri = vscode.Uri.joinPath(workspaceFolder.uri, commentData.filePath);
+      const document = await vscode.workspace.openTextDocument(uri);
+      const editor = await vscode.window.showTextDocument(document);
+      
+      const position = new vscode.Position(commentData.range.start.line, commentData.range.start.character);
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+    }
+  );
+
+  context.subscriptions.push(addCommentCmd, viewCommentsCmd, deleteCommentCmd, deleteCommentThreadCmd, replyToCommentCmd, resolveCommentThreadCmd, unresolveCommentThreadCmd, deleteReplyCmd, navigateToCommentCmd);
+}
+
+class CommentsTreeProvider implements vscode.TreeDataProvider<CommentTreeItem> {
+  private _onDidChangeTreeData: vscode.EventEmitter<CommentTreeItem | undefined | null | void> = new vscode.EventEmitter<CommentTreeItem | undefined | null | void>();
+  readonly onDidChangeTreeData: vscode.Event<CommentTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire();
+  }
+
+  getTreeItem(element: CommentTreeItem): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(element?: CommentTreeItem): Thenable<CommentTreeItem[]> {
+    if (element) {
+      // If this is a reply item, it has no children
+      if (element.replyData) {
+        return Promise.resolve([]);
+      }
+      
+      // For main comment items, show the comment text first, then replies
+      const children: CommentTreeItem[] = [];
+      
+      // Add the comment text as a child item
+      children.push(
+        new CommentTreeItem(
+          `${element.commentData.author}: ${element.commentData.text}`,
+          vscode.TreeItemCollapsibleState.None,
+          element.commentData,
+          undefined,
+          true // Mark as comment text item
+        )
+      );
+      
+      // Add replies if any
+      if (element.commentData.replies && element.commentData.replies.length > 0) {
+        element.commentData.replies.forEach(reply => {
+          children.push(
+            new CommentTreeItem(
+              `  └─ ${reply.author}: ${reply.text}`,
+              vscode.TreeItemCollapsibleState.None,
+              element.commentData,
+              reply
+            )
+          );
+        });
+      }
+      
+      return Promise.resolve(children);
+    } else {
+      // Root level - show all unresolved comments
+      const unresolvedComments = commentStore.comments.filter(c => !c.resolved);
+      
+      if (unresolvedComments.length === 0) {
+        return Promise.resolve([]);
+      }
+
+      return Promise.resolve(
+        unresolvedComments.map(comment => {
+          return new CommentTreeItem(
+            `${comment.filePath}:${comment.range.start.line + 1}`,
+            vscode.TreeItemCollapsibleState.Expanded, // Always expanded to show content
+            comment
+          );
+        })
+      );
+    }
+  }
+}
+
+class CommentTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly label: string,
+    public readonly collapsibleState: vscode.TreeItemCollapsibleState,
+    public readonly commentData: CommentData,
+    public readonly replyData?: { author: string; timestamp: string; text: string },
+    public readonly isCommentText?: boolean
+  ) {
+    super(label, collapsibleState);
+    
+    // Set tooltip and description based on item type
+    if (isCommentText) {
+      // This is the comment text child item - no description needed
+      this.tooltip = `${commentData.author} - ${new Date(commentData.timestamp).toLocaleString()}\n\n${commentData.text}`;
+      this.description = '';
+    } else if (!replyData) {
+      // This is the root comment item (filename:line)
+      this.tooltip = `${commentData.author} - ${new Date(commentData.timestamp).toLocaleString()}\n\n${commentData.text}`;
+      this.description = '';
+    } else {
+      // This is a reply item
+      this.tooltip = `${commentData.author} - ${new Date(commentData.timestamp).toLocaleString()}`;
+      this.description = '';
+    }
+    
+    // Add command to navigate to comment when clicked (only for root items and comment text items)
+    if (!replyData || isCommentText) {
+      this.command = {
+        command: 'comment-tracker.navigateToComment',
+        title: 'Go to Comment',
+        arguments: [commentData]
+      };
+    }
+  }
 }
 
 async function getAuthorName(): Promise<string | undefined> {
@@ -712,6 +841,10 @@ function saveComments() {
 
   try {
     fs.writeFileSync(filePath, JSON.stringify(commentStore, null, 2), 'utf8');
+    // Refresh tree view
+    if (commentsTreeProvider) {
+      commentsTreeProvider.refresh();
+    }
   } catch (error) {
     console.error('Failed to save comments:', error);
     vscode.window.showErrorMessage('Failed to save comments');
