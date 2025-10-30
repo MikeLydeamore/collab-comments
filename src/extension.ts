@@ -28,6 +28,7 @@ interface CommentStore {
 let commentController: vscode.CommentController;
 let commentStore: CommentStore = { comments: [] };
 const commentThreads = new Map<string, vscode.CommentThread>();
+let saveTimeout: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('Comment Tracker extension is now active!');
@@ -58,6 +59,13 @@ export function activate(context: vscode.ExtensionContext) {
   // Load existing comments
   loadComments();
   restoreCommentThreads();
+
+  // Listen for document changes to update comment positions
+  const docChangeListener = vscode.workspace.onDidChangeTextDocument((e) => {
+    updateCommentPositionsFromEdits(e);
+  });
+
+  context.subscriptions.push(docChangeListener);
 
   // Register commands
   const addCommentCmd = vscode.commands.registerCommand('comment-tracker.addComment', async () => {
@@ -440,8 +448,6 @@ async function deleteReplyInteractive() {
 }
 
 async function replyToComment(reply: vscode.CommentReply) {
-  console.log('replyToComment called', reply);
-
   if (!reply || !reply.thread) {
     vscode.window.showErrorMessage('Invalid reply context');
     return;
@@ -546,6 +552,73 @@ async function replyToComment(reply: vscode.CommentReply) {
 
     vscode.window.showInformationMessage(`Reply added by ${author}`);
   }
+}
+
+function updateCommentPositionsFromEdits(event: vscode.TextDocumentChangeEvent) {
+  const filePath = vscode.workspace.asRelativePath(event.document.uri);
+  const threadsToUpdate: Array<{ id: string; newRange: vscode.Range; thread: vscode.CommentThread }> = [];
+
+  // Process changes immediately and collect threads that need updating
+  for (const change of event.contentChanges) {
+    const changeStartLine = change.range.start.line;
+    const changeEndLine = change.range.end.line;
+    const linesAdded = change.text.split('\n').length - 1;
+    const linesRemoved = changeEndLine - changeStartLine;
+    const lineDelta = linesAdded - linesRemoved;
+
+    if (lineDelta === 0) {
+      continue; // No line changes, positions don't need updating
+    }
+
+    // Update all comments in this file that come after the change
+    for (const commentData of commentStore.comments) {
+      if (commentData.filePath === filePath) {
+        // Determine if comment should move based on where the change occurred
+        const shouldMove = commentData.range.start.line > changeStartLine;
+
+        if (shouldMove) {
+          commentData.range.start.line += lineDelta;
+          commentData.range.end.line += lineDelta;
+
+          // Collect thread for batch update
+          const thread = commentThreads.get(commentData.id);
+          if (thread) {
+            const newRange = new vscode.Range(
+              commentData.range.start.line,
+              commentData.range.start.character,
+              commentData.range.end.line,
+              commentData.range.end.character
+            );
+            threadsToUpdate.push({ id: commentData.id, newRange, thread });
+          }
+        }
+      }
+    }
+  }
+
+  // Batch update all threads at once to minimize flicker
+  for (const { id, newRange, thread } of threadsToUpdate) {
+    thread.dispose();
+    const newThread = commentController.createCommentThread(
+      event.document.uri,
+      newRange,
+      thread.comments
+    );
+    newThread.collapsibleState = thread.collapsibleState;
+    newThread.canReply = thread.canReply;
+    newThread.contextValue = thread.contextValue;
+    newThread.state = thread.state;
+    commentThreads.set(id, newThread);
+  }
+
+  // Debounce only the save operation
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+
+  saveTimeout = setTimeout(() => {
+    saveComments();
+  }, 500);
 }
 
 function restoreCommentThreads() {
