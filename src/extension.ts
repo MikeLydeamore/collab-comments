@@ -139,7 +139,61 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
-  context.subscriptions.push(addCommentCmd, viewCommentsCmd, deleteCommentCmd, deleteCommentThreadCmd, replyToCommentCmd, resolveCommentThreadCmd, unresolveCommentThreadCmd, deleteReplyCmd, navigateToCommentCmd);
+  const exportToMarkdownCmd = vscode.commands.registerCommand(
+    'comment-tracker.exportToMarkdown',
+    async () => {
+      if (commentStore.comments.length === 0) {
+        vscode.window.showInformationMessage('No comments to export.');
+        return;
+      }
+
+      let markdown = '# Comments\n\n';
+
+      // Group comments by file
+      const commentsByFile = new Map<string, CommentData[]>();
+      for (const comment of commentStore.comments) {
+        if (!commentsByFile.has(comment.filePath)) {
+          commentsByFile.set(comment.filePath, []);
+        }
+        commentsByFile.get(comment.filePath)!.push(comment);
+      }
+
+      // Generate markdown for each file
+      for (const [filePath, comments] of commentsByFile) {
+        markdown += `## ${filePath}\n\n`;
+
+        for (const comment of comments) {
+          const status = comment.resolved ? '✅' : '❌';
+          const line = comment.range.start.line + 1;
+          markdown += `### ${status} Line ${line} - ${comment.author}\n\n`;
+          markdown += `> ${comment.text}\n\n`;
+          markdown += `*${new Date(comment.timestamp).toLocaleString()}*\n\n`;
+
+          if (comment.replies && comment.replies.length > 0) {
+            markdown += '**Replies:**\n\n';
+            for (const reply of comment.replies) {
+              markdown += `- **${reply.author}** (${new Date(reply.timestamp).toLocaleString()}): ${reply.text}\n`;
+            }
+            markdown += '\n';
+          }
+        }
+      }
+
+      // Copy to clipboard and show preview
+      await vscode.env.clipboard.writeText(markdown);
+
+      // Open in a new untitled document
+      const doc = await vscode.workspace.openTextDocument({
+        content: markdown,
+        language: 'markdown'
+      });
+      await vscode.window.showTextDocument(doc);
+
+      vscode.window.showInformationMessage('Comments exported to markdown and copied to clipboard!');
+    }
+  );
+
+  context.subscriptions.push(addCommentCmd, viewCommentsCmd, deleteCommentCmd, deleteCommentThreadCmd, replyToCommentCmd, resolveCommentThreadCmd, unresolveCommentThreadCmd, deleteReplyCmd, navigateToCommentCmd, exportToMarkdownCmd);
 }
 
 class CommentsTreeProvider implements vscode.TreeDataProvider<CommentTreeItem> {

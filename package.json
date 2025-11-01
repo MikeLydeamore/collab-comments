@@ -69,6 +69,10 @@
         "command": "comment-tracker.deleteReply",
         "title": "Delete Reply",
         "icon": "$(trash)"
+      },
+      {
+        "command": "comment-tracker.exportToMarkdown",
+        "title": "Comment Tracker: Export Comments to Markdown"
       }
     ],
     "menus": {
