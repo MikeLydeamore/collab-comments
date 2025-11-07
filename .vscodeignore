@@ -11,3 +11,5 @@ vsc-extension-quickstart.md
 node_modules/**
 .github/**
 esbuild.js
+.pat
+icon.svg
