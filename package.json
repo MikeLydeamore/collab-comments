@@ -3,6 +3,7 @@
   "displayName": "Comment Tracker",
   "description": "Track comments with author and timestamp for QMD and other files",
   "version": "0.0.2",
+  "publisher": "MichaelLydeamore",
   "repository": {
     "type": "git",
     "url": "https://github.com/MikeLydeamore/collab-comments"
