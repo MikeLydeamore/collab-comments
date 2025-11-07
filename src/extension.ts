@@ -159,23 +159,49 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       // Generate markdown for each file
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+
       for (const [filePath, comments] of commentsByFile) {
         markdown += `## ${filePath}\n\n`;
 
         for (const comment of comments) {
-          const status = comment.resolved ? '✅' : '❌';
+          const checkbox = comment.resolved ? '[x]' : '[ ]';
           const line = comment.range.start.line + 1;
-          markdown += `### ${status} Line ${line} - ${comment.author}\n\n`;
-          markdown += `> ${comment.text}\n\n`;
-          markdown += `*${new Date(comment.timestamp).toLocaleString()}*\n\n`;
 
-          if (comment.replies && comment.replies.length > 0) {
-            markdown += '**Replies:**\n\n';
-            for (const reply of comment.replies) {
-              markdown += `- **${reply.author}** (${new Date(reply.timestamp).toLocaleString()}): ${reply.text}\n`;
+          // Try to get the exact selected text from the file
+          let quotedText = '';
+          if (workspaceFolder) {
+            try {
+              const uri = vscode.Uri.joinPath(workspaceFolder.uri, comment.filePath);
+              const document = await vscode.workspace.openTextDocument(uri);
+              const range = new vscode.Range(
+                comment.range.start.line,
+                comment.range.start.character,
+                comment.range.end.line,
+                comment.range.end.character
+              );
+              quotedText = document.getText(range);
+            } catch (error) {
+              // File might not exist anymore, skip quoted text
             }
+          }
+
+          markdown += `- ${checkbox} Line ${line}`;
+          if (quotedText.trim()) {
+            // For multi-line quotes, prefix each line with '> '
+            const quotedLines = quotedText.split('\n').map(line => `> ${line}`).join('\n');
+            markdown += `\n${quotedLines}\n\n`;
+          } else {
             markdown += '\n';
           }
+          markdown += `${comment.text}\n`;
+
+          if (comment.replies && comment.replies.length > 0) {
+            for (const reply of comment.replies) {
+              markdown += `  - ${reply.author}: ${reply.text}\n`;
+            }
+          }
+          markdown += '\n';
         }
       }
 
